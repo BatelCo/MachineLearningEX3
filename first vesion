@@ -1,0 +1,199 @@
+import numpy as np
+import sys
+from scipy.special import softmax
+
+
+ReLU = lambda x: x *(x > 0)
+
+
+# load and read data by numpy function - load txt
+def read_data():
+    # load train_x
+    train_x = np.loadtxt(sys.argv[1])
+    # load train_y
+    train_y = np.loadtxt(sys.argv[2])
+    # load test_x
+    test_x = np.loadtxt(sys.argv[3])
+    return train_x, train_y, test_x
+
+
+# divide the original train file - 80% for train and 20% for validation data.
+def training_set(train_x, train_y):
+    # what is the matrix length
+    length = len(train_x)
+    # arrange returns arr and in each cell number from zero to length-1
+    index_arr = np.arange(length)
+    # shuffle the index array
+    np.random.shuffle(index_arr)
+    # reorder train_x in the same order of index array
+    train_x = train_x[index_arr]
+    # reorder train_y in the same order of index array
+    train_y = train_y[index_arr]
+    # split the shuffled data to 20% validation and 80% train
+    train_size = int(length * (4/5))
+    # set the train set to 80 percent
+    train_set = list(zip(train_x[:train_size], train_y[:train_size]))
+    # set the validation set to the last 20 percent
+    validation_set = list(zip(train_x[train_size:], train_y[train_size:]))
+    return train_set, validation_set
+
+
+# initialize the data
+def init_net(dim):
+    param_lst = []
+    # for every stratum
+    for stratum in range(1, len(dim)):
+        # "randn" returns a random scalar drawn from the standard normal distribution.
+        W = np.random.randn(dim[stratum-1], dim[stratum]) * np.sqrt(2 / dim[stratum-1])
+        b = np.random.randn(dim[stratum]) * np.sqrt(2 / dim[stratum-1])
+        # add the new parameters to parameters list
+        param_lst.extend([W, b])
+    return param_lst
+
+
+# forward pass - Compute all layers from input to output and put results in a list
+def forward(x, params):
+    # compute all x_i before x_n (for computing gradients later)
+    # (When x_i is the output of layer i)
+    # Put all previous x_i in the stack x_list
+    # Start with input x
+    x_list = [np.array(x)]
+    for layer in range(int(len(params) / 2)):
+        # Get layer params
+        W, b = params[2 * layer], params[2 * layer + 1]
+        # Compute next layer input - ReLU(x*W + b)
+        # Prevent activation in linear classifier
+        # Prevent activation for output layer
+        if len(params) / 2 == 1 or layer == len(params) / 2 - 1:
+            next_x = np.dot(x_list[-1], W) + b
+        else:
+            next_x = ReLU(np.dot(x_list[-1], W) + b)
+        # Add current layer output to the stack
+        x_list.append(next_x)
+    # Softmax last output x_n+1
+    x_list[-1] = softmax(x_list[-1])
+    return x_list
+
+
+# Compute loss and all gradients
+def compute_loss_grad(x, y, params):
+    # Negative log-likelihood loss
+    probs = forward(x, params)[-1]
+    loss = -np.log(probs[y])
+    dl_dx = probs.copy()
+    dl_dx[y] = dl_dx[y]-1
+    hid_x = forward(x, params)
+    # Drop the output (we do not need it for gradient computation)
+    hid_x.pop()
+    # Set gradient list
+    grads = []
+    # Set params stack
+    p = params.copy()
+    # It is convenient to work with the reversed stack
+    p.reverse()
+    # Compute last gradients
+    gbn = dl_dx
+    gWn = np.dot(np.transpose([hid_x.pop()]), np.transpose(np.transpose([dl_dx])))
+    # Add the gradients (reversed) to grads list
+    grads.extend([gbn, gWn])
+    # Compute back layers gradients
+    for k in range(int(len(params) / 2) - 1):
+        # Current x and parameters needed for computing
+        xi = hid_x.pop()
+        b_next, W_next, bi, Wi = p[0:4]
+        mi = np.dot(xi, Wi) + bi
+        dhi_dmi = (mi >= 0).astype(int)
+        gbi = np.dot(W_next, grads[-2]) * dhi_dmi
+        gWi = np.dot(np.transpose([xi]), np.transpose(np.transpose([gbi])))
+        # Add the gradients (reversed) to grads list
+        grads.extend([gbi, gWi])
+        # Drop next layer parameters
+        p.pop(0)
+        p.pop(0)
+    # Reverse back the gradient list
+    grads.reverse()
+    return loss, grads
+
+
+# compute validation set accuracy using trained parameters
+def evaluate(data, params):
+    accuracy = 0
+    # samples num
+    samp_num = len(data)
+    for x, y in data:
+        # cast y
+        y = int(y)
+        #  alc class scores
+        probs = forward(x, params)[-1]
+        # argmax
+        y_hat = np.argmax(probs)
+        # correct classification
+        if y_hat == y:
+            accuracy = accuracy + 1
+    # div accuracy by number of samples
+    accuracy = accuracy / samp_num
+    return accuracy
+
+
+# train network
+def train(train_set, validation_set, params, epochs, learning_rate):
+    for epoch in range(epochs):
+        # total loss for epoch
+        epoch_loss = 0
+        # shuffle data for SGD
+        np.random.shuffle(train_set)
+        for x, y in train_set:
+            # cast y
+            y = int(y)
+            # Compute loss and the gradients
+            loss, grads = compute_loss_grad(x, y, params)
+            # add the loss
+            epoch_loss = epoch_loss + loss
+            # Update the parameters according to the gradients
+            # and the learning rate
+            for i, param in enumerate(params):
+                param -= learning_rate * grads[i]
+        # Compute and print loss and accuracy
+        train_loss = epoch_loss / len(train_set)
+        train_acc = evaluate(train_set, params)
+        dev_acc = evaluate(validation_set, params)
+        print('epoch:', epoch + 1, 'train_loss:', train_loss,
+              'train_acc:', train_acc, 'dev_acc:', dev_acc)
+    # Return trained network parameters
+    return params
+
+
+def predict(test_x, params, file):
+    '''
+    Predict test set labels using trained parameters
+    '''
+    f = open(file, "w")
+    for x in test_x:
+        out = forward(x, params)[-1]
+        f.write(str(out.argmax()) + '\n')
+    f.close()
+
+
+def main():
+    # load & read data
+    train_x, train_y, test_x = read_data()
+    # ?
+    input_size = len(train_x[0])
+    # ?
+    output_size = 10
+    # create validation set and train set
+    train_set, validation_set = training_set(train_x, train_y)
+    # optimal dimensions
+    dimensions = [input_size, 500, 100, output_size]
+    # initialize network parameters
+    params = init_net(dimensions)
+    # train the set
+    params = train(train_set, validation_set, params, epochs=10, learning_rate=1e-5)
+    # Predict test set
+    predict(test_x, params, 'test_y')
+    print("Goodbye, World!")
+
+
+# call main function
+if _name_ == '_main_':
+    main()
